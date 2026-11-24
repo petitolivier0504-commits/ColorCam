@@ -28,7 +28,7 @@
 
   /* Bandeau d'erreur */
   #err {
-    position:fixed; left:10px; right:10px; bottom:70px;
+    position:absolute; left:10px; right:10px; bottom:100%;
     display:none; background:rgba(0,0,0,.8); color:#fff; padding:10px 12px;
     border-radius:10px; z-index:99999; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto
   }
@@ -58,7 +58,6 @@
   <div id="zoomHud">Zoom : <strong id="zoomLabel">1.00×</strong></div>
 
   <div id="nameCard" aria-live="polite">—</div>
-  <div id="err"></div>
 
   <!-- La vidéo est TOUJOURS cachée (on dessine dans le canvas pour éviter la double image) -->
   <video id="v" playsinline autoplay style="display:none"></video>
@@ -66,6 +65,7 @@
   <div id="reticle" title="Taper pour déplacer • Glisser pour affiner"></div>
 
   <div id="ui">
+    <div id="err"></div>
     <div class="toolbar">
       <button class="iconbtn" id="lock" title="Verrouiller/Déverrouiller la mesure" aria-label="Verrouiller"></button>
 
@@ -73,6 +73,11 @@
       <button class="iconbtn langbtn" id="lang" title="Basculer Français / English" aria-label="Langue">
         <span id="langLabel">FR</span>
       </button>
+
+      <select class="iconbtn" id="naming" aria-label="Précision du nom de la couleur">
+        <option value="simple">Simple</option>
+        <option value="precise">Précis</option>
+      </select>
 
       <button class="iconbtn" id="speak" title="Lire le nom" aria-label="Lire">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -140,7 +145,11 @@
   const errBox=document.getElementById('err');
 
   // --- État
-  let locked=false, lastHex="#000000";
+  const naming = document.getElementById('naming');
+  let locked=false, lastHex="#000000", lastRgb=null;
+  try {
+    if(localStorage.getItem('colorcam-naming') === 'precise') naming.value = 'precise';
+  } catch {}
   let facing="environment", stream=null;
   let cameraBusy=false, cameraGeneration=0, photoGeneration=0;
   let mode="live", stillImage=null;
@@ -334,11 +343,58 @@
 
   function setReticle(){ const r=c.getBoundingClientRect(); reticle.style.left=(rx*r.width)+"px"; reticle.style.top=(ry*r.height)+"px"; }
 
+  function simpleColorName(r,g,b){
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    const range = max-min;
+    const lightness = (max+min)/510;
+    const french = uiLang === 'fr';
+    if(max <= 25) return french ? "Noir" : "Black";
+    if(min >= 235) return french ? "Blanc" : "White";
+
+    let family;
+    if(range <= 20){
+      family = ["Gris", "Gray"];
+    } else {
+      let hue;
+      if(max === r) hue = (g-b)/range;
+      else if(max === g) hue = 2+(b-r)/range;
+      else hue = 4+(r-g)/range;
+      hue = (hue*60+360)%360;
+      if(hue < 15 || hue >= 345) family = ["Rouge", "Red"];
+      else if(hue < 48) family = lightness < .42 ? ["Marron", "Brown"] : ["Orange", "Orange"];
+      else if(hue < 68) family = ["Jaune", "Yellow"];
+      else if(hue < 165) family = ["Vert", "Green"];
+      else if(hue < 190) family = ["Turquoise", "Turquoise"];
+      else if(hue < 255) family = ["Bleu", "Blue"];
+      else if(hue < 295) family = ["Violet", "Purple"];
+      else family = ["Rose", "Pink"];
+      if(family[0] === "Rouge" && lightness > .67) family = ["Rose", "Pink"];
+    }
+
+    const [fr,en] = family;
+    if(lightness < .34) return french ? fr+" foncé" : "Dark "+en.toLowerCase();
+    if(lightness > .67) return french ? fr+" clair" : "Light "+en.toLowerCase();
+    return french ? fr : en;
+  }
+
+  function updateColorName(){
+    if(!lastRgb) return;
+    let label;
+    if(naming.value === 'precise'){
+      const nearest = nearestByDeltaE(...lastRgb);
+      label = uiLang === 'fr' ? nearest.fr : nearest.en;
+    } else {
+      label = simpleColorName(...lastRgb);
+    }
+    if(nameCard.textContent !== label) nameCard.textContent = label;
+  }
+
   function updateCard(r,g,b){
-    const hex=toHex(r,g,b); lastHex=hex;
-    const nearest=nearestByDeltaE(r,g,b);
-    const label = (uiLang==='fr') ? nearest.fr : nearest.en;
-    nameCard.textContent = label;
+    const hex = toHex(r,g,b);
+    if(lastRgb && hex === lastHex) return;
+    lastRgb = [r,g,b];
+    lastHex = hex;
+    updateColorName();
     nameCard.style.background = hex;
     nameCard.style.color = bestText(r,g,b);
   }
@@ -381,8 +437,13 @@
     uiLang = (uiLang==='fr') ? 'en' : 'fr';
     langLabel.textContent = (uiLang==='fr') ? 'FR' : 'EN';
     langBtn.title = (uiLang==='fr') ? "Basculer Français / English" : "Switch English / Français";
-    const d=ctx.getImageData(Math.round(rx*c.width),Math.round(ry*c.height),1,1).data;
-    updateCard(d[0],d[1],d[2]);
+    naming.setAttribute('aria-label', uiLang==='fr' ? 'Précision du nom de la couleur' : 'Color name detail');
+    naming.options[1].textContent = uiLang==='fr' ? 'Précis' : 'Precise';
+    updateColorName();
+  };
+  naming.onchange=()=>{
+    try { localStorage.setItem('colorcam-naming', naming.value); } catch {}
+    updateColorName();
   };
   speakBtn.onclick=()=>{ const txt=(document.getElementById('nameCard').textContent||"")+(", "+lastHex); if('speechSynthesis' in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(txt));}};
   copyBtn.onclick=async()=>{try{await navigator.clipboard.writeText(lastHex);copyBtn.title="Copié !";setTimeout(()=>copyBtn.title="Copier le code HEX",1200);}catch{}};
@@ -398,7 +459,7 @@
         if(generation !== photoGeneration) return;
         stillImage=img;mode="image";modeLabel.textContent="Image importée";v.style.display="none";
         resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();
-        rx=.5;ry=.5;setReticle();
+        rx=.5;ry=.5;setReticle();hideError();
       };
       img.src=reader.result;
     };
