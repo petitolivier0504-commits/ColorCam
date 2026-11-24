@@ -2,7 +2,11 @@
 <html lang="fr">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ColorCam – Caméra corrigée + fallback + FR par défaut</title>
+<title>ColorCam</title>
+<meta name="theme-color" content="#141c2a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./icons/colorcam-180.png">
 <style>
   *{box-sizing:border-box}
   body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto;background:#000;color:#fff}
@@ -480,6 +484,11 @@
   downloadBtn.onclick=()=>{drawFrame();const url=c.toDataURL("image/png");const a=document.createElement('a');a.href=url;a.download=`colorcam-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;document.body.appendChild(a);a.click();a.remove();};
   requestAnimationFrame(tick);
   startCamera();
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(error => {
+      console.warn('Le mode hors ligne de ColorCam est indisponible.', error);
+    });
+  }
 })();
 </script>
 </body>
