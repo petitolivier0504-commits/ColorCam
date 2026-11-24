@@ -142,6 +142,7 @@
   // --- État
   let locked=false, lastHex="#000000";
   let facing="environment", stream=null;
+  let cameraBusy=false, cameraGeneration=0, photoGeneration=0;
   let mode="live", stillImage=null;
   let rx=.5, ry=.5, draggingReticle=false;
   let uiLang='fr'; // FR par défaut
@@ -228,32 +229,78 @@
   function showError(msg){ if(errBox){ errBox.textContent = msg; errBox.style.display = 'block'; } }
   function hideError(){ if(errBox){ errBox.style.display = 'none'; } }
 
-  async function startCamera(){
-    stopCamera();
-    const tryConstraints = async (cons) => {
-      try { return await navigator.mediaDevices.getUserMedia(cons); }
-      catch(e){ return null; }
-    };
-    let s = await tryConstraints({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-    if(!s) s = await tryConstraints({ video: true, audio: false });
-    if(!s) s = await tryConstraints({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    if(!s){
-      showError("Caméra inaccessible. Utilise HTTPS ou http://localhost, autorise la caméra, et vérifie qu’un périphérique vidéo est présent.");
-      return;
+  async function requestCamera(direction, allowFallback){
+    const preferred = allowFallback ? { ideal: direction } : { exact: direction };
+    const videoOptions = [{ facingMode: preferred }];
+    if(allowFallback) videoOptions.push(true, { width: { ideal: 1280 }, height: { ideal: 720 } });
+    const generation = cameraGeneration;
+    for(const video of videoOptions){
+      try {
+        const candidate = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+        if(generation !== cameraGeneration){
+          candidate.getTracks().forEach(track=>track.stop());
+          return null;
+        }
+        const actual = candidate.getVideoTracks()[0]?.getSettings?.().facingMode;
+        if(!allowFallback && actual && actual !== direction){
+          candidate.getTracks().forEach(track=>track.stop());
+          return null;
+        }
+        return candidate;
+      } catch {
+        if(generation !== cameraGeneration) return null;
+      }
     }
-    stream = s;
-    v.srcObject = stream;
-    v.style.display = "none";
-    mode = "live";
-    modeLabel.textContent = "Caméra";
-    resumeBtn.disabled = true;
-    downloadBtn.disabled = true;
-    hideError();
-    requestAnimationFrame(tick);
+    return null;
   }
-  function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
 
-  await startCamera();
+  async function startCamera(direction=facing, switching=false){
+    if(cameraBusy) return;
+    cameraBusy = true;
+    ++photoGeneration;
+    const previousTrack = stream?.getVideoTracks()[0];
+    const previousDirection = facing;
+    stopCamera();
+    const generation = cameraGeneration;
+
+    try {
+      let nextStream = await requestCamera(direction, !switching);
+      let recovered = false;
+      if(!nextStream && switching && previousTrack && generation === cameraGeneration){
+        nextStream = await requestCamera(previousDirection, true);
+        recovered = Boolean(nextStream);
+      }
+      if(generation !== cameraGeneration) return;
+      if(!nextStream){
+        showError(switching
+          ? "Impossible de changer de caméra."
+          : "Caméra inaccessible. Utilise HTTPS ou http://localhost, autorise la caméra, et vérifie qu’un périphérique vidéo est présent.");
+        return;
+      }
+
+      stream = nextStream;
+      facing = stream.getVideoTracks()[0]?.getSettings?.().facingMode
+        || (recovered ? previousDirection : direction);
+      v.srcObject = stream;
+      v.style.display = "none";
+      mode = "live";
+      stillImage = null;
+      modeLabel.textContent = "Caméra";
+      resumeBtn.disabled = true;
+      downloadBtn.disabled = true;
+      if(recovered) showError("Impossible de changer de caméra.");
+      else hideError();
+    } finally {
+      cameraBusy = false;
+    }
+  }
+
+  function stopCamera(){
+    ++cameraGeneration;
+    if(stream) stream.getTracks().forEach(track=>track.stop());
+    stream = null;
+    v.srcObject = null;
+  }
 
   function iconLockClosed(){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>`}
   function iconLockOpen(){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"></rect><path d="M16 11V9a4 4 0 0 0-8 0"></path></svg>`}
@@ -300,8 +347,12 @@
     const d=ctx.getImageData(clamp(x,0,c.width-1),clamp(y,0,c.height-1),1,1).data;
     updateCard(d[0],d[1],d[2]); }
 
-  function tick(){ drawFrame(); if(!locked){ sample(); } requestAnimationFrame(tick); }
-  v.onloadedmetadata=()=>requestAnimationFrame(tick);
+  function tick(){
+    requestAnimationFrame(tick);
+    if(mode==="live" && (!stream || v.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)) return;
+    drawFrame();
+    if(!locked) sample();
+  }
   setReticle();
 
   function moveReticle(cx,cy){ const r=c.getBoundingClientRect();
@@ -335,17 +386,39 @@
   };
   speakBtn.onclick=()=>{ const txt=(document.getElementById('nameCard').textContent||"")+(", "+lastHex); if('speechSynthesis' in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(txt));}};
   copyBtn.onclick=async()=>{try{await navigator.clipboard.writeText(lastHex);copyBtn.title="Copié !";setTimeout(()=>copyBtn.title="Copier le code HEX",1200);}catch{}};
-  switchBtn.onclick=async()=>{facing=(facing==="environment")?"user":"environment";await startCamera();};
+  switchBtn.onclick=()=>startCamera(facing==="environment" ? "user" : "environment", true);
   importBtn.onclick=()=>fileInput.click();
   fileInput.onchange=()=>{
     const f=fileInput.files?.[0]; if(!f) return;
+    const generation = ++photoGeneration;
     const reader=new FileReader();
-    reader.onload=()=>{const img=new Image(); img.onload=()=>{stillImage=img;mode="image";modeLabel.textContent="Image importée";v.style.display="none";resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();rx=.5;ry=.5;setReticle();requestAnimationFrame(tick);}; img.src=reader.result;};
+    reader.onload=()=>{
+      const img=new Image();
+      img.onload=()=>{
+        if(generation !== photoGeneration) return;
+        stillImage=img;mode="image";modeLabel.textContent="Image importée";v.style.display="none";
+        resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();
+        rx=.5;ry=.5;setReticle();
+      };
+      img.src=reader.result;
+    };
     reader.readAsDataURL(f);
   };
-  snapBtn.onclick=()=>{drawFrame();const img=new Image();img.onload=()=>{stillImage=img;mode="still";modeLabel.textContent="Photo";v.style.display="none";resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();}; img.src=c.toDataURL("image/png");};
-  resumeBtn.onclick=async()=>{stillImage=null;v.style.display="none";await startCamera();};
+  snapBtn.onclick=()=>{
+    const generation = ++photoGeneration;
+    drawFrame();
+    const img=new Image();
+    img.onload=()=>{
+      if(generation !== photoGeneration) return;
+      stillImage=img;mode="still";modeLabel.textContent="Photo";v.style.display="none";
+      resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();
+    };
+    img.src=c.toDataURL("image/png");
+  };
+  resumeBtn.onclick=()=>startCamera();
   downloadBtn.onclick=()=>{drawFrame();const url=c.toDataURL("image/png");const a=document.createElement('a');a.href=url;a.download=`colorcam-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;document.body.appendChild(a);a.click();a.remove();};
+  requestAnimationFrame(tick);
+  startCamera();
 })();
 </script>
 </body>
