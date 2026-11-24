@@ -1,6 +1,6 @@
 const scope = self.registration.scope;
 const cachePrefix = `colorcam:${scope}:`;
-const cacheName = `${cachePrefix}v1`;
+const cacheName = `${cachePrefix}v2`;
 const appUrl = new URL('./', scope).href;
 const indexUrl = new URL('index.html', scope).href;
 const assets = new Set([
