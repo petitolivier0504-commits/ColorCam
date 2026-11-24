@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ColorCam – Caméra corrigée + fallback + FR par défaut</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto;background:#000;color:#fff}
+  #wrap{position:relative;height:100dvh;overflow:hidden;touch-action:none}
+  video,canvas{position:absolute;inset:0;width:100%;height:100%}
+
+  /* Cartouche nom (fixe, lisible) */
+  #nameCard{
+    position:fixed; left:50%; top:10px; transform:translateX(-50%);
+    min-width:220px; max-width:min(92vw,720px);
+    padding:10px 14px; border-radius:14px; border:1.5px solid rgba(255,255,255,.35);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 8px 24px rgba(0,0,0,.35); z-index:9999; pointer-events:none;
+    background:#222; color:#fff; font-weight:800; font-size:clamp(18px,3.5vw,28px)
+  }
+
+  /* HUD */
+  #modeBadge, #zoomHud {
+    position:fixed; top:8px; background:rgba(0,0,0,.6);
+    padding:6px 10px; border-radius:12px; font-size:12px; z-index:9998; pointer-events:none
+  }
+  #modeBadge{ left:8px }  #zoomHud{ right:8px }
+
+  /* Bandeau d'erreur */
+  #err {
+    position:fixed; left:10px; right:10px; bottom:70px;
+    display:none; background:rgba(0,0,0,.8); color:#fff; padding:10px 12px;
+    border-radius:10px; z-index:99999; font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto
+  }
+
+  /* Barre d’icônes */
+  #ui{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.55);padding:8px 10px}
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
+  .iconbtn{
+    height:44px; min-width:44px; padding:0 10px; display:grid; place-items:center;
+    border:0; border-radius:12px; background:rgba(255,255,255,.92); color:#000;
+    cursor:pointer; box-shadow:0 1px 6px rgba(0,0,0,.15)
+  }
+  .iconbtn:disabled{opacity:.5;cursor:not-allowed}
+  .iconbtn svg{width:22px;height:22px;display:block}
+  .langbtn{font-weight:800}
+  .langbtn span{display:inline-block;min-width:2ch;text-align:center}
+
+  /* Viseur */
+  #reticle{
+    position:absolute;width:48px;height:48px;border:2px solid rgba(255,255,255,.95);
+    border-radius:50%;transform:translate(-50%,-50%);z-index:5;box-shadow:0 2px 10px rgba(0,0,0,.35)
+  }
+</style>
+<body>
+<div id="wrap">
+  <div id="modeBadge">Mode : <strong id="modeLabel">Caméra</strong></div>
+  <div id="zoomHud">Zoom : <strong id="zoomLabel">1.00×</strong></div>
+
+  <div id="nameCard" aria-live="polite">—</div>
+  <div id="err"></div>
+
+  <!-- La vidéo est TOUJOURS cachée (on dessine dans le canvas pour éviter la double image) -->
+  <video id="v" playsinline autoplay style="display:none"></video>
+  <canvas id="c"></canvas>
+  <div id="reticle" title="Taper pour déplacer • Glisser pour affiner"></div>
+
+  <div id="ui">
+    <div class="toolbar">
+      <button class="iconbtn" id="lock" title="Verrouiller/Déverrouiller la mesure" aria-label="Verrouiller"></button>
+
+      <!-- Bascule FR/EN bien visible -->
+      <button class="iconbtn langbtn" id="lang" title="Basculer Français / English" aria-label="Langue">
+        <span id="langLabel">FR</span>
+      </button>
+
+      <button class="iconbtn" id="speak" title="Lire le nom" aria-label="Lire">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 15H3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h2l4-3v12l-4-3Z"></path>
+          <path d="M16 8a5 5 0 0 1 0 8"></path>
+          <path d="M19 5a9 9 0 0 1 0 14"></path>
+        </svg>
+      </button>
+
+      <button class="iconbtn" id="copy" title="Copier le code HEX" aria-label="Copier HEX">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+          <rect x="4" y="4" width="11" height="11" rx="2"></rect>
+        </svg>
+      </button>
+
+      <button class="iconbtn" id="switch" title="Basculer caméra avant/arrière" aria-label="Basculer caméra">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M7 7h.01"></path><rect x="3" y="5" width="18" height="14" rx="3"></rect>
+          <path d="M7 16l-3-3 3-3"></path><path d="M17 8l3 3-3 3"></path>
+        </svg>
+      </button>
+
+      <button class="iconbtn" id="import" title="Importer une image" aria-label="Importer une image">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+          <path d="M3 15l5-5 4 4 3-3 6 6"></path>
+        </svg>
+      </button>
+      <input type="file" id="file" accept="image/*" style="display:none">
+
+      <button class="iconbtn" id="snap" title="Prendre une photo" aria-label="Prendre une photo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"></path>
+          <circle cx="12" cy="14" r="4"></circle>
+        </svg>
+      </button>
+      <button class="iconbtn" id="resume" title="Reprendre la caméra" aria-label="Reprendre la caméra" disabled>
+        <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="8,6 20,12 8,18"></polygon></svg>
+      </button>
+      <button class="iconbtn" id="download" title="Télécharger l'image" aria-label="Télécharger" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+(async () => {
+  // --- Refs
+  const wrap=document.getElementById('wrap');
+  const v=document.getElementById('v');
+  const c=document.getElementById('c');
+  const ctx=c.getContext('2d',{willReadFrequently:true});
+  const lockBtn=document.getElementById('lock');
+  const langBtn=document.getElementById('lang'), langLabel=document.getElementById('langLabel');
+  const speakBtn=document.getElementById('speak'), copyBtn=document.getElementById('copy');
+  const switchBtn=document.getElementById('switch'), importBtn=document.getElementById('import'), fileInput=document.getElementById('file');
+  const snapBtn=document.getElementById('snap'), resumeBtn=document.getElementById('resume'), downloadBtn=document.getElementById('download');
+  const modeLabel=document.getElementById('modeLabel'), nameCard=document.getElementById('nameCard');
+  const zoomLabel=document.getElementById('zoomLabel');
+  const reticle=document.getElementById('reticle');
+  const errBox=document.getElementById('err');
+
+  // --- État
+  let locked=false, lastHex="#000000";
+  let facing="environment", stream=null;
+  let mode="live", stillImage=null;
+  let rx=.5, ry=.5, draggingReticle=false;
+  let uiLang='fr'; // FR par défaut
+
+  // --- Zoom / Pan
+  let zoom=1, tx=0, ty=0; const Z_MIN=1, Z_MAX=8; let pinch=null;
+
+  function sizeCanvas(){ c.width=c.clientWidth; c.height=c.clientHeight; }
+  function setZoomLabel(){ zoomLabel.textContent=`${zoom.toFixed(2)}×`; }
+  window.addEventListener('resize', sizeCanvas); sizeCanvas(); setZoomLabel();
+
+  // --- Utils
+  const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
+  const toHex=(r,g,b)=>"#"+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('').toUpperCase();
+  const hexToRgb=h=>(h.replace('#','').match(/.{2}/g)||["00","00","00"]).map(s=>parseInt(s,16));
+  function relLum(r,g,b){const f=x=>(x<=10.314)?x/3294:Math.pow((x/269+0.0513),2.4);r=f(r);g=f(g);b=f(b);return .2126*r+.7152*g+.0722*b}
+  function contrast(a,b){const L1=relLum(...a),L2=relLum(...b);const[A,B]=L1>L2?[L1,L2]:[L2,L1];return (A+.05)/(B+.05)}
+  const bestText=(r,g,b)=>contrast([r,g,b],[0,0,0])>=contrast([r,g,b],[255,255,255])?"#000":"#FFF";
+
+  // Colorimétrie Lab + ΔE2000
+  function pivotXYZ(n){return n>0.008856?Math.cbrt(n):(7.787*n+16/116)}
+  function rgbToXyz(r,g,b){r/=255;g/=255;b/=255;r=r<=.04045?r/12.92:Math.pow((r+.055)/1.055,2.4);g=g<=.04045?g/12.92:Math.pow((g+.055)/1.055,2.4);b=b<=.04045?b/12.92:Math.pow((b+.055)/1.055,2.4);return [r*.4124564+g*.3575761+b*.1804375,r*.2126729+g*.7151522+b*.0721750,r*.0193339+g*.1191920+b*.9503041]}
+  function xyzToLab(X,Y,Z){const Xn=.95047,Yn=1,Zn=1.08883;const fx=pivotXYZ(X/Xn),fy=pivotXYZ(Y/Yn),fz=pivotXYZ(Z/Zn);return [Math.max(0,116*fy-16),500*(fx-fy),200*(fy-fz)]}
+  const rgbToLab=(r,g,b)=>xyzToLab(...rgbToXyz(r,g,b));
+  const deg2rad=d=>d*Math.PI/180, rad2deg=r=>r*180/Math.PI;
+  function deltaE2000(L1,L2){
+    const [L1v,a1,b1]=L1,[L2v,a2,b2]=L2, avgL=(L1v+L2v)/2;
+    const C1=Math.hypot(a1,b1), C2=Math.hypot(a2,b2), avgC=(C1+C2)/2;
+    const G=.5*(1-Math.sqrt(Math.pow(avgC,7)/(Math.pow(avgC,7)+Math.pow(25,7))));
+    const a1p=(1+G)*a1, a2p=(1+G)*a2, C1p=Math.hypot(a1p,b1), C2p=Math.hypot(a2p,b2), avgCp=(C1p+C2p)/2;
+    const h1p=Math.atan2(b1,a1p), h2p=Math.atan2(b2,a2p); let dh=h2p-h1p; if(Math.abs(dh)>Math.PI) dh-=Math.sign(dh)*2*Math.PI;
+    const dL=L2v-L1v, dC=C2p-C1p, dH=2*Math.sqrt(C1p+C2p)*Math.sin(dh/2);
+    let avgHp=(Math.abs(h1p-h2p)>Math.PI)?(h1p+h2p+2*Math.PI)/2:(h1p+h2p)/2;
+    const T=1-.17*Math.cos(avgHp-deg2rad(30))+.24*Math.cos(2*avgHp)+.32*Math.cos(3*avgHp+deg2rad(6))-.20*Math.cos(4*avgHp-deg2rad(63));
+    const SL=1+(.015*Math.pow(avgL-50,2))/Math.sqrt(20+Math.pow(avgL-50,2)), SC=1+.045*avgCp, SH=1+.015*avgCp*T;
+    const deltaRo=deg2rad(30)*Math.exp(-Math.pow((rad2deg(avgHp)-275)/25,2)), RC=2*Math.sqrt(Math.pow(avgCp,7)/(Math.pow(avgCp,7)+Math.pow(25,7))), RT=-RC*Math.sin(2*deltaRo);
+    return Math.sqrt(Math.pow(dL/SL,2)+Math.pow(dC/SC,2)+Math.pow(dH/SH,2)+RT*(dC/SC)*(dH/SH));
+  }
+
+  const CSS_COLORS={AliceBlue:"#F0F8FF",AntiqueWhite:"#FAEBD7",Aqua:"#00FFFF",Aquamarine:"#7FFFD4",Azure:"#F0FFFF",Beige:"#F5F5DC",Bisque:"#FFE4C4",Black:"#000000",BlanchedAlmond:"#FFEBCD",Blue:"#0000FF",BlueViolet:"#8A2BE2",Brown:"#A52A2A",BurlyWood:"#DEB887",CadetBlue:"#5F9EA0",Chartreuse:"#7FFF00",Chocolate:"#D2691E",Coral:"#FF7F50",CornflowerBlue:"#6495ED",Cornsilk:"#FFF8DC",Crimson:"#DC143C",Cyan:"#00FFFF",DarkBlue:"#00008B",DarkCyan:"#008B8B",DarkGoldenRod:"#B8860B",DarkGray:"#A9A9A9",DarkGrey:"#A9A9A9",DarkGreen:"#006400",DarkKhaki:"#BDB76B",DarkMagenta:"#8B008B",DarkOliveGreen:"#556B2F",DarkOrange:"#FF8C00",DarkOrchid:"#9932CC",DarkRed:"#8B0000",DarkSalmon:"#E9967A",DarkSeaGreen:"#8FBC8F",DarkSlateBlue:"#483D8B",DarkSlateGray:"#2F4F4F",DarkSlateGrey:"#2F4F4F",DarkTurquoise:"#00CED1",DarkViolet:"#9400D3",DeepPink:"#FF1493",DeepSkyBlue:"#00BFFF",DimGray:"#696969",DimGrey:"#696969",DodgerBlue:"#1E90FF",FireBrick:"#B22222",FloralWhite:"#FFFAF0",ForestGreen:"#228B22",Fuchsia:"#FF00FF",Gainsboro:"#DCDCDC",GhostWhite:"#F8F8FF",Gold:"#FFD700",GoldenRod:"#DAA520",Gray:"#808080",Grey:"#808080",Green:"#008000",GreenYellow:"#ADFF2F",HoneyDew:"#F0FFF0",HotPink:"#FF69B4",IndianRed:"#CD5C5C",Indigo:"#4B0082",Ivory:"#FFFFF0",Khaki:"#F0E68C",Lavender:"#E6E6FA",LavenderBlush:"#FFF0F5",LawnGreen:"#7CFC00",LemonChiffon:"#FFFACD",LightBlue:"#ADD8E6",LightCoral:"#F08080",LightCyan:"#E0FFFF",LightGoldenRodYellow:"#FAFAD2",LightGray:"#D3D3D3",LightGrey:"#D3D3D3",LightGreen:"#90EE90",LightPink:"#FFB6C1",LightSalmon:"#FFA07A",LightSeaGreen:"#20B2AA",LightSkyBlue:"#87CEFA",LightSlateGray:"#778899",LightSlateGrey:"#778899",LightSteelBlue:"#B0C4DE",LightYellow:"#FFFFE0",Lime:"#00FF00",LimeGreen:"#32CD32",Linen:"#FAF0E6",Magenta:"#FF00FF",Maroon:"#800000",MediumAquaMarine:"#66CDAA",MediumBlue:"#0000CD",MediumOrchid:"#BA55D3",MediumPurple:"#9370DB",MediumSeaGreen:"#3CB371",MediumSlateBlue:"#7B68EE",MediumSpringGreen:"#00FA9A",MediumTurquoise:"#48D1CC",MediumVioletRed:"#C71585",MidnightBlue:"#191970",MintCream:"#F5FFFA",MistyRose:"#FFE4E1",Moccasin:"#FFE4B5",NavajoWhite:"#FFDEAD",Navy:"#000080",OldLace:"#FDF5E6",Olive:"#808000",OliveDrab:"#6B8E23",Orange:"#FFA500",OrangeRed:"#FF4500",Orchid:"#DA70D6",PaleGoldenRod:"#EEE8AA",PaleGreen:"#98FB98",PaleTurquoise:"#AFEEEE",PaleVioletRed:"#DB7093",PapayaWhip:"#FFEFD5",PeachPuff:"#FFDAB9",Peru:"#CD853F",Pink:"#FFC0CB",Plum:"#DDA0DD",PowderBlue:"#B0E0E6",Purple:"#800080",RebeccaPurple:"#663399",Red:"#FF0000",RosyBrown:"#BC8F8F",RoyalBlue:"#4169E1",SaddleBrown:"#8B4513",Salmon:"#FA8072",SandyBrown:"#F4A460",SeaGreen:"#2E8B57",SeaShell:"#FFF5EE",Sienna:"#A0522D",Silver:"#C0C0C0",SkyBlue:"#87CEEB",SlateBlue:"#6A5ACD",SlateGray:"#708090",SlateGrey:"#708090",Snow:"#FFFAFA",SpringGreen:"#00FF7F",SteelBlue:"#4682B4",Tan:"#D2B48C",Teal:"#008080",Thistle:"#D8BFD8",Tomato:"#FF6347",Turquoise:"#40E0D0",Violet:"#EE82EE",Wheat:"#F5DEB3",White:"#FFFFFF",WhiteSmoke:"#F5F5F5",Yellow:"#FFFF00",YellowGreen:"#9ACD32"};
+
+  const WORD_FR={
+    Black:"Noir", White:"Blanc", Red:"Rouge", Green:"Vert", Blue:"Bleu",
+    Yellow:"Jaune", Cyan:"Cyan", Magenta:"Magenta", Purple:"Violet",
+    Orange:"Orange", Pink:"Rose", Gray:"Gris", Grey:"Gris", Brown:"Marron",
+    Dark:"foncé", Light:"clair", Medium:"moyen", Deep:"profond", Pale:"pâle", Dim:"sombre",
+    Royal:"roi", Sky:"ciel", Slate:"ardoise", Steel:"acier", Cornflower:"bleuet", Powder:"poudre",
+    Teal:"bleu canard",
+    Forest:"forêt", Sea:"mer", Spring:"printemps", Lawn:"gazon",
+    Lime:"lime", Chartreuse:"chartreuse", Olive:"olive", GoldenRod:"verge d’or",
+    Khaki:"kaki", Beige:"beige", Wheat:"blé", Cornsilk:"soie de maïs",
+    Lemon:"citron", Chiffon:"chiffon",
+    Sienna:"terre de sienne", Saddle:"sellier", Peru:"terre cuite", Chocolate:"chocolat", Rosy:"rosé",
+    Sandy:"sable", Burly:"bois", Navajo:"navajo", Moccasin:"mocassin", Bisque:"bisque", Antique:"antique",
+    Fire:"brique", Crimson:"cramoisi", Tomato:"tomate", Coral:"corail", Salmon:"saumon", Lavender:"lavande",
+    Azure:"azur", Indigo:"indigo", Thistle:"chardon", Ivory:"ivoire"
+  };
+
+  const splitCamel = n => n.replace(/([a-z])([A-Z])/g,'$1 $2').split(/[\s-]+/);
+  function frNameFromEnglish(en){
+    if(en==="Lime") return "Vert lime";
+    if(en==="Aqua") return "Cyan (aqua)";
+    if(en==="RebeccaPurple") return "Violet (Rebecca)";
+    const parts = splitCamel(en);
+    const rawBase = parts[parts.length-1];
+    let base = WORD_FR[rawBase] || rawBase.toLowerCase();
+    if(rawBase==="Brown") base = "Marron (brun)";
+    const quals = parts.slice(0,-1).map(p => WORD_FR[p] || p.toLowerCase());
+    let name = base + (quals.length ? " " + quals.join(' ') : "");
+    const exoticTags = { DodgerBlue:"Dodger", AliceBlue:"Alice", Peru:"Peru", BurlyWood:"BurlyWood", GoldenRod:"goldenrod" };
+    if(exoticTags[en]) name += ` (${exoticTags[en]})`;
+    return name.replace(/\s+/g,' ').trim();
+  }
+  const NAMED = Object.entries(CSS_COLORS).map(([en,hex])=>{
+    const rgb=hexToRgb(hex); return {en, fr:frNameFromEnglish(en), rgb, lab:rgbToLab(...rgb)};
+  });
+
+  function nearestByDeltaE(r,g,b){
+    const lab=rgbToLab(r,g,b); let best=Infinity,pick=null;
+    for(const it of NAMED){ const dE=deltaE2000(lab,it.lab); if(dE<best){best=dE; pick={...it,dE};} }
+    return pick ?? {en:"—",fr:"—",dE:NaN};
+  }
+
+  function showError(msg){ if(errBox){ errBox.textContent = msg; errBox.style.display = 'block'; } }
+  function hideError(){ if(errBox){ errBox.style.display = 'none'; } }
+
+  async function startCamera(){
+    stopCamera();
+    const tryConstraints = async (cons) => {
+      try { return await navigator.mediaDevices.getUserMedia(cons); }
+      catch(e){ return null; }
+    };
+    let s = await tryConstraints({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+    if(!s) s = await tryConstraints({ video: true, audio: false });
+    if(!s) s = await tryConstraints({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    if(!s){
+      showError("Caméra inaccessible. Utilise HTTPS ou http://localhost, autorise la caméra, et vérifie qu’un périphérique vidéo est présent.");
+      return;
+    }
+    stream = s;
+    v.srcObject = stream;
+    v.style.display = "none";
+    mode = "live";
+    modeLabel.textContent = "Caméra";
+    resumeBtn.disabled = true;
+    downloadBtn.disabled = true;
+    hideError();
+    requestAnimationFrame(tick);
+  }
+  function stopCamera(){ if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; } }
+
+  await startCamera();
+
+  function iconLockClosed(){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>`}
+  function iconLockOpen(){return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="9" rx="2"></rect><path d="M16 11V9a4 4 0 0 0-8 0"></path></svg>`}
+  function updateLockIcon(){ lockBtn.innerHTML=locked?iconLockClosed():iconLockOpen(); }
+  updateLockIcon();
+
+  function containRect(srcW, srcH, dstW, dstH){
+    const s = Math.min(dstW/srcW, dstH/srcH);
+    const w = srcW * s, h = srcH * s;
+    const x = (dstW - w) / 2, y = (dstH - h) / 2;
+    return {x, y, w, h};
+  }
+
+  function drawFrame(){
+    sizeCanvas();
+    ctx.save();
+    ctx.clearRect(0,0,c.width,c.height);
+    ctx.setTransform(zoom,0,0,zoom,tx,ty);
+    if(mode==="live"){
+      if(v.videoWidth && v.videoHeight){
+        const r = containRect(v.videoWidth, v.videoHeight, c.width, c.height);
+        ctx.drawImage(v, r.x, r.y, r.w, r.h);
+      }
+    } else if (stillImage){
+      const sw=stillImage.naturalWidth||stillImage.width, sh=stillImage.naturalHeight||stillImage.height;
+      const r = containRect(sw, sh, c.width, c.height);
+      ctx.drawImage(stillImage, r.x, r.y, r.w, r.h);
+    }
+    ctx.restore();
+  }
+
+  function setReticle(){ const r=c.getBoundingClientRect(); reticle.style.left=(rx*r.width)+"px"; reticle.style.top=(ry*r.height)+"px"; }
+
+  function updateCard(r,g,b){
+    const hex=toHex(r,g,b); lastHex=hex;
+    const nearest=nearestByDeltaE(r,g,b);
+    const label = (uiLang==='fr') ? nearest.fr : nearest.en;
+    nameCard.textContent = label;
+    nameCard.style.background = hex;
+    nameCard.style.color = bestText(r,g,b);
+  }
+
+  function sample(){ const x=Math.round(rx*c.width), y=Math.round(ry*c.height);
+    const d=ctx.getImageData(clamp(x,0,c.width-1),clamp(y,0,c.height-1),1,1).data;
+    updateCard(d[0],d[1],d[2]); }
+
+  function tick(){ drawFrame(); if(!locked){ sample(); } requestAnimationFrame(tick); }
+  v.onloadedmetadata=()=>requestAnimationFrame(tick);
+  setReticle();
+
+  function moveReticle(cx,cy){ const r=c.getBoundingClientRect();
+    rx=clamp((cx-r.left)/r.width,0,1); ry=clamp((cy-r.top)/r.height,0,1); setReticle(); }
+  c.addEventListener('pointerdown',e=>moveReticle(e.clientX,e.clientY));
+  reticle.addEventListener('pointerdown',e=>{draggingReticle=true;reticle.setPointerCapture(e.pointerId);e.preventDefault();});
+  reticle.addEventListener('pointermove',e=>{if(draggingReticle) moveReticle(e.clientX,e.clientY);});
+  reticle.addEventListener('pointerup',e=>{draggingReticle=false;reticle.releasePointerCapture(e.pointerId);});
+
+  c.addEventListener('wheel',e=>{e.preventDefault();const r=c.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    const prev=zoom,f=e.deltaY<0?1.1:.9; zoom=clamp(zoom*f,Z_MIN,Z_MAX);
+    tx=mx-(mx-tx)*(zoom/prev); ty=my-(my-ty)*(zoom/prev); setZoomLabel();},{passive:false});
+  let lastTap=0; c.addEventListener('pointerup',e=>{const now=Date.now(); if(now-lastTap<300){const r=c.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;const prev=zoom;zoom=(zoom<2)?2:1;tx=mx-(mx-tx)*(zoom/prev);ty=my-(my-ty)*(zoom/prev);setZoomLabel();} lastTap=now;});
+
+  const touches=new Map(); const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y); const center=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
+  wrap.addEventListener('pointerdown',e=>{if(e.pointerType==='touch'){touches.set(e.pointerId,{x:e.clientX,y:e.clientY}); if(touches.size===2){const [t1,t2]=[...touches.values()]; pinch={d0:dist(t1,t2), c0:center(t1,t2), zoom0:zoom, tx0:tx, ty0:ty};}}});
+  wrap.addEventListener('pointermove',e=>{if(e.pointerType==='touch'&&touches.has(e.pointerId)){touches.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(touches.size===2&&pinch){const [t1,t2]=[...touches.values()],d=dist(t1,t2),cMid=center(t1,t2);
+      zoom=clamp(pinch.zoom0*(d/pinch.d0),Z_MIN,Z_MAX); tx=cMid.x-(cMid.x-pinch.tx0)*(zoom/pinch.zoom0); ty=cMid.y-(cMid.y-pinch.ty0)*(zoom/pinch.zoom0); setZoomLabel();}
+    else if(touches.size===1&&!draggingReticle){const t=[...touches.values()][0]; if(!pinch){pinch={last:{x:t.x,y:t.y}};} const dx=t.x-pinch.last.x,dy=t.y-pinch.last.y; tx+=dx; ty+=dy; pinch.last={x:t.x,y:t.y};}}},{passive:false});
+  const endTouch=e=>{if(e.pointerType==='touch'){touches.delete(e.pointerId); if(touches.size<2) pinch=null;}}; ['pointerup','pointercancel','pointerleave'].forEach(ev=>wrap.addEventListener(ev,endTouch));
+
+  // --- Actions
+  lockBtn.onclick=()=>{locked=!locked;updateLockIcon();};
+  langBtn.onclick=()=>{
+    uiLang = (uiLang==='fr') ? 'en' : 'fr';
+    langLabel.textContent = (uiLang==='fr') ? 'FR' : 'EN';
+    langBtn.title = (uiLang==='fr') ? "Basculer Français / English" : "Switch English / Français";
+    const d=ctx.getImageData(Math.round(rx*c.width),Math.round(ry*c.height),1,1).data;
+    updateCard(d[0],d[1],d[2]);
+  };
+  speakBtn.onclick=()=>{ const txt=(document.getElementById('nameCard').textContent||"")+(", "+lastHex); if('speechSynthesis' in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(txt));}};
+  copyBtn.onclick=async()=>{try{await navigator.clipboard.writeText(lastHex);copyBtn.title="Copié !";setTimeout(()=>copyBtn.title="Copier le code HEX",1200);}catch{}};
+  switchBtn.onclick=async()=>{facing=(facing==="environment")?"user":"environment";await startCamera();};
+  importBtn.onclick=()=>fileInput.click();
+  fileInput.onchange=()=>{
+    const f=fileInput.files?.[0]; if(!f) return;
+    const reader=new FileReader();
+    reader.onload=()=>{const img=new Image(); img.onload=()=>{stillImage=img;mode="image";modeLabel.textContent="Image importée";v.style.display="none";resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();rx=.5;ry=.5;setReticle();requestAnimationFrame(tick);}; img.src=reader.result;};
+    reader.readAsDataURL(f);
+  };
+  snapBtn.onclick=()=>{drawFrame();const img=new Image();img.onload=()=>{stillImage=img;mode="still";modeLabel.textContent="Photo";v.style.display="none";resumeBtn.disabled=false;downloadBtn.disabled=false;stopCamera();}; img.src=c.toDataURL("image/png");};
+  resumeBtn.onclick=async()=>{stillImage=null;v.style.display="none";await startCamera();};
+  downloadBtn.onclick=()=>{drawFrame();const url=c.toDataURL("image/png");const a=document.createElement('a');a.href=url;a.download=`colorcam-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;document.body.appendChild(a);a.click();a.remove();};
+})();
+</script>
+</body>
+</html>
